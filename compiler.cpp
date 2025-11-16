@@ -92,7 +92,7 @@ public:
     }
     return F;
   }
-  
+
   Function *visit(FunctionAST &node) {
     Function *function = theModule->getFunction(node.getProto()->getName());
     if (!function) {
@@ -103,7 +103,7 @@ public:
         LogErrorV("Function redefinition with different # args");
         return nullptr;
       }
-      
+
       // update argument names to match new definition
       unsigned idx = 0;
       for (auto &arg : function->args()) {

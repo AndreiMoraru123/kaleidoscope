@@ -8,48 +8,44 @@
 
 #include "lexer.hpp"
 
-
 class ExprVisitor {
 public:
-    virtual ~ExprVisitor() = default;
-    virtual llvm::Value* visit(class NumberExprAST &node) = 0;
-    virtual llvm::Value* visit(class VariableExprAST &node) = 0;
-    virtual llvm::Value* visit(class BinaryExprAST &node) = 0;
-    virtual llvm::Value* visit(class CallExprAST &node) = 0;
+  virtual ~ExprVisitor() = default;
+  virtual llvm::Value *visit(class NumberExprAST &node) = 0;
+  virtual llvm::Value *visit(class VariableExprAST &node) = 0;
+  virtual llvm::Value *visit(class BinaryExprAST &node) = 0;
+  virtual llvm::Value *visit(class CallExprAST &node) = 0;
 };
 
 class FunctionVisitor {
 public:
-    virtual ~FunctionVisitor() = default;
-    virtual llvm::Function* visit(class PrototypeAST &node) = 0;
-    virtual llvm::Function* visit(class FunctionAST &node) = 0;
+  virtual ~FunctionVisitor() = default;
+  virtual llvm::Function *visit(class PrototypeAST &node) = 0;
+  virtual llvm::Function *visit(class FunctionAST &node) = 0;
 };
 
 class ExprAST {
 public:
   virtual ~ExprAST() = default;
-  virtual llvm::Value* accept(ExprVisitor &v) = 0;
+  virtual llvm::Value *accept(ExprVisitor &v) = 0;
 };
 
 class NumberExprAST : public ExprAST {
   double Val;
+
 public:
   NumberExprAST(double Val) : Val(Val) {}
   double getValue() const { return Val; }
-  llvm::Value* accept(ExprVisitor &v) override {
-      return v.visit(*this);
-  }
+  llvm::Value *accept(ExprVisitor &v) override { return v.visit(*this); }
 };
 
 class VariableExprAST : public ExprAST {
   std::string Name;
 
 public:
-  const std::string& getName() const { return Name; }
+  const std::string &getName() const { return Name; }
   VariableExprAST(const std::string &Name) : Name(Name) {}
-  llvm::Value* accept(ExprVisitor &v) override {
-      return v.visit(*this);
-  }
+  llvm::Value *accept(ExprVisitor &v) override { return v.visit(*this); }
 };
 
 class BinaryExprAST : public ExprAST {
@@ -58,14 +54,12 @@ class BinaryExprAST : public ExprAST {
 
 public:
   char getOp() const { return Op; }
-  ExprAST* getLHS() const { return LHS.get(); }
-  ExprAST* getRHS() const { return RHS.get(); }
+  ExprAST *getLHS() const { return LHS.get(); }
+  ExprAST *getRHS() const { return RHS.get(); }
   BinaryExprAST(char Op, std::unique_ptr<ExprAST> LHS,
                 std::unique_ptr<ExprAST> RHS)
       : Op(Op), LHS(std::move(LHS)), RHS(std::move(RHS)) {}
-  llvm::Value* accept(ExprVisitor &v) override {
-      return v.visit(*this);
-  }
+  llvm::Value *accept(ExprVisitor &v) override { return v.visit(*this); }
 };
 
 class CallExprAST : public ExprAST {
@@ -73,14 +67,12 @@ class CallExprAST : public ExprAST {
   std::vector<std::unique_ptr<ExprAST>> Args;
 
 public:
-  const std::string& getCallee() const { return Callee; }
-  const std::vector<std::unique_ptr<ExprAST>>& getArgs() const { return Args; }
+  const std::string &getCallee() const { return Callee; }
+  const std::vector<std::unique_ptr<ExprAST>> &getArgs() const { return Args; }
   CallExprAST(const std::string &Callee,
               std::vector<std::unique_ptr<ExprAST>> &Args)
       : Callee(Callee), Args(std::move(Args)) {}
-  llvm::Value* accept(ExprVisitor &v) override {
-      return v.visit(*this);
-  }
+  llvm::Value *accept(ExprVisitor &v) override { return v.visit(*this); }
 };
 
 class PrototypeAST {
@@ -88,13 +80,11 @@ class PrototypeAST {
   std::vector<std::string> Args;
 
 public:
-  const std::string& getName() const { return Name; }
-  const std::vector<std::string>& getArgs() const { return Args; }
+  const std::string &getName() const { return Name; }
+  const std::vector<std::string> &getArgs() const { return Args; }
   PrototypeAST(const std::string &Name, const std::vector<std::string> &Args)
       : Name(Name), Args(Args) {}
-  llvm::Function* accept(FunctionVisitor &v) {
-      return v.visit(*this);
-  };
+  llvm::Function *accept(FunctionVisitor &v) { return v.visit(*this); };
 };
 
 class FunctionAST {
@@ -104,14 +94,12 @@ class FunctionAST {
 public:
   // const PrototypeAST* getProto() const { return Proto.get(); }
   // const ExprAST* getBody() const { return Body.get(); }
-  const std::unique_ptr<PrototypeAST>& getProto() const { return Proto; }
-  const std::unique_ptr<ExprAST>& getBody() const { return Body; }
+  const std::unique_ptr<PrototypeAST> &getProto() const { return Proto; }
+  const std::unique_ptr<ExprAST> &getBody() const { return Body; }
   FunctionAST(std::unique_ptr<PrototypeAST> Proto,
               std::unique_ptr<ExprAST> Body)
       : Proto(std::move(Proto)), Body(std::move(Body)) {}
-  llvm::Function* accept(FunctionVisitor &v) {
-      return v.visit(*this);
-  };
+  llvm::Function *accept(FunctionVisitor &v) { return v.visit(*this); };
 };
 
 static int currentToken;
@@ -122,7 +110,6 @@ static int GetNextToken() {
   //                                   : std::to_string(currentToken));
   return currentToken;
 }
-
 
 llvm::Value *LogErrorV(const char *Str) {
   std::println("Error: {}", Str);
@@ -317,8 +304,9 @@ static unsigned AnonymousExprCount = 0;
 // toplevelexpr ::= expression
 static std::unique_ptr<FunctionAST> ParseTopLevelExpr() {
   if (auto expr = ParseExpression()) {
-    auto Proto = std::make_unique<PrototypeAST>("__anon_expr" + std::to_string(AnonymousExprCount++),
-                                                std::vector<std::string>());
+    auto Proto = std::make_unique<PrototypeAST>(
+        "__anon_expr" + std::to_string(AnonymousExprCount++),
+        std::vector<std::string>());
     return std::make_unique<FunctionAST>(std::move(Proto), std::move(expr));
   }
   return nullptr;
