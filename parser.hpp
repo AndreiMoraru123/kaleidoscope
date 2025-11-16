@@ -216,7 +216,7 @@ static int GetTokenPrecedence() {
 
 static std::unique_ptr<ExprAST> ParseBinOpRHS(int ExprPrec,
                                               std::unique_ptr<ExprAST> LHS) {
-  std::println("Parsing binary operation RHS with precedence {}", ExprPrec);
+  // std::println("Parsing binary operation RHS with precedence {}", ExprPrec);
   while (true) {
     int tokPrec = GetTokenPrecedence();
     if (tokPrec < ExprPrec) {
