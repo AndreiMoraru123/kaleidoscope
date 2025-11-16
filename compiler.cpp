@@ -77,6 +77,7 @@ public:
 };
 
 class CodegenFunctionVisitor : public FunctionVisitor {
+  CodegenExprVisitor exprVisitor;
 public:
   Function *visit(PrototypeAST &node) {
     std::vector<Type *> Doubles(node.getArgs().size(),
@@ -128,7 +129,6 @@ public:
       namedValues[std::string(arg.getName())] = &arg;
     }
 
-    CodegenExprVisitor exprVisitor;
     if (Value *retVal = node.getBody()->accept(exprVisitor)) {
       builder->CreateRet(retVal);
       verifyFunction(*function);
