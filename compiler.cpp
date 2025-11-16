@@ -87,7 +87,6 @@ public:
                                    node.getName(), theModule.get());
 
     unsigned idx = 0;
-    ;
     for (auto &arg : F->args()) {
       arg.setName(node.getArgs()[idx++]);
     }
@@ -98,6 +97,18 @@ public:
     Function *function = theModule->getFunction(node.getProto()->getName());
     if (!function) {
       function = node.getProto()->accept(*this);
+    } else {
+      // validate signature matches
+      if (function->arg_size() != node.getProto()->getArgs().size()) {
+        LogErrorV("Function redefinition with different # args");
+        return nullptr;
+      }
+      
+      // update argument names to match new definition
+      unsigned idx = 0;
+      for (auto &arg : function->args()) {
+        arg.setName(node.getProto()->getArgs()[idx++]);
+      }
     }
 
     if (!function) {
