@@ -1,17 +1,43 @@
 #include "parser.hpp"
 
+#include <llvm/ADT/APFloat.h>
+#include <llvm/ADT/STLExtras.h>
+#include <llvm/IR/BasicBlock.h>
+#include <llvm/IR/Constants.h>
+#include <llvm/IR/DerivedTypes.h>
 #include <llvm/IR/Function.h>
 #include <llvm/IR/IRBuilder.h>
 #include <llvm/IR/LLVMContext.h>
 #include <llvm/IR/Module.h>
+#include <llvm/IR/PassManager.h>
+#include <llvm/IR/Type.h>
 #include <llvm/IR/Verifier.h>
+#include <llvm/Passes/PassBuilder.h>
+#include <llvm/Passes/StandardInstrumentations.h>
+#include <llvm/Support/TargetSelect.h>
+#include <llvm/Target/TargetMachine.h>
+#include <llvm/Transforms/InstCombine/InstCombine.h>
+#include <llvm/Transforms/Scalar.h>
+#include <llvm/Transforms/Scalar/GVN.h>
+#include <llvm/Transforms/Scalar/Reassociate.h>
+#include <llvm/Transforms/Scalar/SimplifyCFG.h>
 
 using namespace llvm;
 
 static std::unique_ptr<LLVMContext> theContext;
-static std::unique_ptr<IRBuilder<>> builder;
 static std::unique_ptr<Module> theModule;
+static std::unique_ptr<IRBuilder<>> builder;
 static std::map<std::string, Value *> namedValues;
+// static std::unique_ptr<KaleidoscopeJIT> theJIT;
+static std::unique_ptr<FunctionPassManager> theFPM;
+static std::unique_ptr<LoopAnalysisManager> theLAM;
+static std::unique_ptr<FunctionAnalysisManager> theFAM;
+static std::unique_ptr<CGSCCAnalysisManager> theCGAM;
+static std::unique_ptr<ModuleAnalysisManager> theMAM;
+static std::unique_ptr<PassInstrumentationCallbacks> thePIC;
+static std::unique_ptr<StandardInstrumentations> theSI;
+static std::map<std::string, std::unique_ptr<PrototypeAST>> functionProtos;
+static ExitOnError ExitOnErr;
 
 class CodegenExprVisitor : public ExprVisitor {
 public:
@@ -78,6 +104,7 @@ public:
 
 class CodegenFunctionVisitor : public FunctionVisitor {
   CodegenExprVisitor exprVisitor;
+
 public:
   Function *visit(PrototypeAST &node) {
     std::vector<Type *> Doubles(node.getArgs().size(),
@@ -132,6 +159,7 @@ public:
     if (Value *retVal = node.getBody()->accept(exprVisitor)) {
       builder->CreateRet(retVal);
       verifyFunction(*function);
+      theFPM->run(*function, *theFAM);
       return function;
     }
 
@@ -140,10 +168,37 @@ public:
   }
 };
 
-static void InitializeModule() {
+static void InitializeModuleAndManagers() {
   theContext = std::make_unique<LLVMContext>();
   theModule = std::make_unique<Module>("my cool jit", *theContext);
+  // theModule->setDataLayout(theJIT->createDataLayout());
+
   builder = std::make_unique<IRBuilder<>>(*theContext);
+
+  theFPM = std::make_unique<FunctionPassManager>();
+  theLAM = std::make_unique<LoopAnalysisManager>();
+  theFAM = std::make_unique<FunctionAnalysisManager>();
+  theCGAM = std::make_unique<CGSCCAnalysisManager>();
+  theMAM = std::make_unique<ModuleAnalysisManager>();
+  thePIC = std::make_unique<PassInstrumentationCallbacks>();
+  theSI = std::make_unique<StandardInstrumentations>(*theContext,
+                                                     /*DebugLogging*/ true);
+  theSI->registerCallbacks(*thePIC, theMAM.get());
+
+  // Add transform passes.
+  // Do simple "peephole" optimizations and bit-twiddling optzns.
+  theFPM->addPass(InstCombinePass());
+  // Reassociate expressions.
+  theFPM->addPass(ReassociatePass());
+  // Eliminate Common SubExpressions.
+  theFPM->addPass(GVNPass());
+  // Simplify the control flow graph (deleting unreachable blocks, etc).
+  theFPM->addPass(SimplifyCFGPass());
+  
+  PassBuilder PB;
+  PB.registerModuleAnalyses(*theMAM);
+  PB.registerFunctionAnalyses(*theFAM);
+  PB.crossRegisterProxies(*theLAM, *theFAM, *theCGAM, *theMAM);
 }
 
 CodegenFunctionVisitor funcVisitor;
@@ -217,7 +272,7 @@ int main() {
   GetNextToken();
 
   // Make the module, which holds all the code.
-  InitializeModule();
+  InitializeModuleAndManagers();
 
   // Run the main "interpreter loop" now.
   MainLoop();
