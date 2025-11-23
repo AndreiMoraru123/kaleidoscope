@@ -19,13 +19,13 @@ enum class Token : int {
   IN = -10,
 };
 
-const inline std::unordered_map<int, std::string> tokenNames = {
-    {static_cast<int>(Token::ENOF), "EOF"},
-    {static_cast<int>(Token::DEF), "DEF"},
-    {static_cast<int>(Token::EXTERN), "EXTERN"},
-    {static_cast<int>(Token::IDENTIFIER), "IDENTIFIER"},
-    {static_cast<int>(Token::NUMBER), "NUMBER"},
-};
+// const inline std::unordered_map<int, std::string> tokenNames = {
+//     {static_cast<int>(Token::ENOF), "EOF"},
+//     {static_cast<int>(Token::DEF), "DEF"},
+//     {static_cast<int>(Token::EXTERN), "EXTERN"},
+//     {static_cast<int>(Token::IDENTIFIER), "IDENTIFIER"},
+//     {static_cast<int>(Token::NUMBER), "NUMBER"},
+// };
 
 static std::string identifier;
 static double numVal;
