@@ -1,7 +1,10 @@
+#include "jit.hpp"
 #include "parser.hpp"
 
+#include <cassert>
 #include <llvm/ADT/APFloat.h>
 #include <llvm/ADT/STLExtras.h>
+#include <llvm/ExecutionEngine/Orc/ThreadSafeModule.h>
 #include <llvm/IR/BasicBlock.h>
 #include <llvm/IR/Constants.h>
 #include <llvm/IR/DerivedTypes.h>
@@ -14,6 +17,7 @@
 #include <llvm/IR/Verifier.h>
 #include <llvm/Passes/PassBuilder.h>
 #include <llvm/Passes/StandardInstrumentations.h>
+#include <llvm/Support/Error.h>
 #include <llvm/Support/TargetSelect.h>
 #include <llvm/Target/TargetMachine.h>
 #include <llvm/Transforms/InstCombine/InstCombine.h>
@@ -28,7 +32,7 @@ static std::unique_ptr<LLVMContext> theContext;
 static std::unique_ptr<Module> theModule;
 static std::unique_ptr<IRBuilder<>> builder;
 static std::map<std::string, Value *> namedValues;
-// static std::unique_ptr<KaleidoscopeJIT> theJIT;
+static std::unique_ptr<KaleidoscopeJIT> theJIT;
 static std::unique_ptr<FunctionPassManager> theFPM;
 static std::unique_ptr<LoopAnalysisManager> theLAM;
 static std::unique_ptr<FunctionAnalysisManager> theFAM;
@@ -37,7 +41,8 @@ static std::unique_ptr<ModuleAnalysisManager> theMAM;
 static std::unique_ptr<PassInstrumentationCallbacks> thePIC;
 static std::unique_ptr<StandardInstrumentations> theSI;
 static std::map<std::string, std::unique_ptr<PrototypeAST>> functionProtos;
-static ExitOnError ExitOnErr;
+
+Function *getFunction(std::string Name);
 
 class CodegenExprVisitor : public ExprVisitor {
 public:
@@ -78,7 +83,8 @@ public:
 
   Value *visit(CallExprAST &node) {
     // Look up the name in the global module table.
-    Function *callee = theModule->getFunction(node.getCallee());
+    // Function *callee = theModule->getFunction(node.getCallee());
+    Function *callee = getFunction(node.getCallee());
     if (!callee) {
       LogErrorV("Unknown function referenced");
       return nullptr;
@@ -122,7 +128,8 @@ public:
   }
 
   Function *visit(FunctionAST &node) {
-    Function *function = theModule->getFunction(node.getProto()->getName());
+    // Function *function = theModule->getFunction(node.getProto()->getName());
+    Function *function = getFunction(node.getProto()->getName());
     if (!function) {
       function = node.getProto()->accept(*this);
     } else {
@@ -138,6 +145,9 @@ public:
         arg.setName(node.getProto()->getArgs()[idx++]);
       }
     }
+
+    auto &proto = *node.getProto();
+    functionProtos[proto.getName()] = node.releaseProto();
 
     if (!function) {
       return nullptr;
@@ -171,7 +181,7 @@ public:
 static void InitializeModuleAndManagers() {
   theContext = std::make_unique<LLVMContext>();
   theModule = std::make_unique<Module>("my cool jit", *theContext);
-  // theModule->setDataLayout(theJIT->createDataLayout());
+  theModule->setDataLayout(theJIT->getDataLayout());
 
   builder = std::make_unique<IRBuilder<>>(*theContext);
 
@@ -194,7 +204,7 @@ static void InitializeModuleAndManagers() {
   theFPM->addPass(GVNPass());
   // Simplify the control flow graph (deleting unreachable blocks, etc).
   theFPM->addPass(SimplifyCFGPass());
-  
+
   PassBuilder PB;
   PB.registerModuleAnalyses(*theMAM);
   PB.registerFunctionAnalyses(*theFAM);
@@ -203,12 +213,32 @@ static void InitializeModuleAndManagers() {
 
 CodegenFunctionVisitor funcVisitor;
 
+Function *getFunction(std::string Name) {
+  // First, see if the function has already been added to the current module.
+  if (auto *F = theModule->getFunction(Name))
+    return F;
+
+  // If not, check whether we can codegen the declaration from some existing
+  // prototype.
+  auto FI = functionProtos.find(Name);
+  if (FI != functionProtos.end())
+    return FI->second->accept(funcVisitor);
+
+  // If no existing prototype exists, return null.
+  return nullptr;
+}
+
+static ExitOnError exitOnError;
+
 static void HandleDefinition() {
   if (auto funcAST = ParseDefinition()) {
     if (Function *funcIR = funcAST->accept(funcVisitor)) {
       std::println("Parsed a function definition:");
       funcIR->print(llvm::outs());
       std::println();
+      exitOnError(theJIT->addModule(
+          ThreadSafeModule(std::move(theModule), std::move(theContext))));
+      InitializeModuleAndManagers();
     }
   } else {
     GetNextToken();
@@ -221,6 +251,7 @@ static void HandleExtern() {
       std::println("Parsed an extern:");
       funcIR->print(llvm::outs());
       std::println();
+      functionProtos[protoAST->getName()] = std::move(protoAST);
     }
   } else {
     GetNextToken();
@@ -230,9 +261,27 @@ static void HandleExtern() {
 static void HandleTopLevelExpression() {
   if (auto funcAST = ParseTopLevelExpr()) {
     if (Function *funcIR = funcAST->accept(funcVisitor)) {
+
+      // Create a ResourceTracker to track JIT'd memory allocated to our
+      // anonymous expression -- that way we can free it after executing.
+      auto rt = theJIT->getMainJITDylib().createResourceTracker();
+
       std::println("Parsed a top-level expr:");
       funcIR->print(llvm::outs());
       std::println();
+
+      auto tsm = ThreadSafeModule(std::move(theModule), std::move(theContext));
+      exitOnError(theJIT->addModule(std::move(tsm), rt));
+      InitializeModuleAndManagers();
+
+      // Search the JIT for the __anon_expr symbol.
+      auto exprSymbol = exitOnError(theJIT->lookup(
+          "__anon_expr" + std::to_string(AnonymousExprCount - 1)));
+
+      double (*FP)() = exprSymbol.getAddress().toPtr<double (*)()>();
+      std::println("Evaluated to {}", FP());
+
+      exitOnError(rt->remove());
     }
   } else {
     GetNextToken();
@@ -262,6 +311,10 @@ static void MainLoop() {
 }
 
 int main() {
+  InitializeNativeTarget();
+  InitializeNativeTargetAsmPrinter();
+  InitializeNativeTargetAsmParser();
+
   BinopPrecedence['<'] = 10;
   BinopPrecedence['+'] = 20;
   BinopPrecedence['-'] = 20;
@@ -271,14 +324,13 @@ int main() {
   std::print(">>> ");
   GetNextToken();
 
+  theJIT = exitOnError(KaleidoscopeJIT::Create());
+
   // Make the module, which holds all the code.
   InitializeModuleAndManagers();
 
   // Run the main "interpreter loop" now.
   MainLoop();
-
-  // Print out all of the generated code.
-  theModule->print(errs(), nullptr);
 
   return 0;
 }

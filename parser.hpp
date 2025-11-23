@@ -1,3 +1,5 @@
+#pragma once
+
 #include <cstdlib>
 #include <memory>
 #include <print>
@@ -96,6 +98,7 @@ public:
   // const ExprAST* getBody() const { return Body.get(); }
   const std::unique_ptr<PrototypeAST> &getProto() const { return Proto; }
   const std::unique_ptr<ExprAST> &getBody() const { return Body; }
+  std::unique_ptr<PrototypeAST> releaseProto() { return std::move(Proto); }
   FunctionAST(std::unique_ptr<PrototypeAST> Proto,
               std::unique_ptr<ExprAST> Body)
       : Proto(std::move(Proto)), Body(std::move(Body)) {}
