@@ -2,8 +2,9 @@
 
 #include <cctype>
 #include <cstdio>
-#include <map>
+#include <unordered_map>
 #include <string>
+#include <utility>
 
 enum class Token : int {
   ENOF = -1,
@@ -11,9 +12,12 @@ enum class Token : int {
   EXTERN = -3,
   IDENTIFIER = -4,
   NUMBER = -5,
+  IF = -6,
+  THEN = -7,
+  ELSE = -8,
 };
 
-const inline std::map<int, std::string> tokenNames = {
+const inline std::unordered_map<int, std::string> tokenNames = {
     {static_cast<int>(Token::ENOF), "EOF"},
     {static_cast<int>(Token::DEF), "DEF"},
     {static_cast<int>(Token::EXTERN), "EXTERN"},
@@ -37,12 +41,21 @@ static int GetToken() {
       identifier += lastChar;
     }
     if (identifier == "def") {
-      return static_cast<int>(Token::DEF);
+      return std::to_underlying(Token::DEF);
     }
     if (identifier == "extern") {
-      return static_cast<int>(Token::EXTERN);
+      return std::to_underlying(Token::EXTERN);
     }
-    return static_cast<int>(Token::IDENTIFIER);
+    if (identifier == "if") {
+      return std::to_underlying(Token::IF);
+    }
+    if (identifier == "then") {
+      return std::to_underlying(Token::THEN);
+    }
+    if (identifier == "else") {
+      return std::to_underlying(Token::ELSE);
+    }
+    return std::to_underlying(Token::IDENTIFIER);
   }
 
   if (std::isdigit(lastChar) || lastChar == '.') {

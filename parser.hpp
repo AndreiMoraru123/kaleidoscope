@@ -4,6 +4,7 @@
 #include <memory>
 #include <print>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include <llvm/IR/Value.h>
@@ -17,6 +18,7 @@ public:
   virtual llvm::Value *visit(class VariableExprAST &node) = 0;
   virtual llvm::Value *visit(class BinaryExprAST &node) = 0;
   virtual llvm::Value *visit(class CallExprAST &node) = 0;
+  virtual llvm::Value *visit(class IfExprAST &node) = 0;
 };
 
 class FunctionVisitor {
@@ -114,6 +116,19 @@ static int GetNextToken() {
   return currentToken;
 }
 
+class IfExprAST : public ExprAST {
+  std::unique_ptr<ExprAST> Cond, Then, Else;
+
+public:
+  ExprAST *getCond() const { return Cond.get(); }
+  ExprAST *getThen() const { return Then.get(); }
+  ExprAST *getElse() const { return Else.get(); }
+  IfExprAST(std::unique_ptr<ExprAST> Cond, std::unique_ptr<ExprAST> Then,
+            std::unique_ptr<ExprAST> Else)
+      : Cond(std::move(Cond)), Then(std::move(Then)), Else(std::move(Else)) {}
+  llvm::Value *accept(ExprVisitor &v) override { return v.visit(*this); }
+};
+
 llvm::Value *LogErrorV(const char *Str) {
   std::println("Error: {}", Str);
   return nullptr;
@@ -137,6 +152,38 @@ static std::unique_ptr<ExprAST> ParseNumberExpr() {
 }
 
 static std::unique_ptr<ExprAST> ParseExpression();
+
+static std::unique_ptr<ExprAST> ParseIfExpr() {
+  GetNextToken(); // eat the 'if'.
+
+  auto Cond = ParseExpression();
+  if (!Cond) {
+    return nullptr;
+  }
+
+  if (currentToken != std::to_underlying(Token::THEN)) {
+    return LogError("expected 'then'");
+  }
+  GetNextToken(); // eat the 'then'
+
+  auto Then = ParseExpression();
+  if (!Then) {
+    return nullptr;
+  }
+
+  if (currentToken != std::to_underlying(Token::ELSE)) {
+    return LogError("expected 'else'");
+  }
+  GetNextToken(); // eat the 'else'
+
+  auto Else = ParseExpression();
+  if (!Else) {
+    return nullptr;
+  }
+
+  return std::make_unique<IfExprAST>(std::move(Cond), std::move(Then),
+                                     std::move(Else));
+}
 
 // parenexpr ::= '(' expression ')'
 static std::unique_ptr<ExprAST> ParseParenExpr() {
@@ -193,18 +240,20 @@ static std::unique_ptr<ExprAST> ParseIdentifierExpr() {
 //   ::= parenexpr
 static std::unique_ptr<ExprAST> ParsePrimary() {
   switch (currentToken) {
-  case static_cast<int>(Token::IDENTIFIER):
+  case std::to_underlying(Token::IDENTIFIER):
     return ParseIdentifierExpr();
-  case static_cast<int>(Token::NUMBER):
+  case std::to_underlying(Token::NUMBER):
     return ParseNumberExpr();
   case '(':
     return ParseParenExpr();
+  case std::to_underlying(Token::IF):
+    return ParseIfExpr();
   default:
     return LogError("unknown token when expecting an expression");
   }
 }
 
-static std::map<char, int> BinopPrecedence;
+static std::unordered_map<char, int> BinopPrecedence;
 
 static int GetTokenPrecedence() {
   if (!isascii(currentToken)) {

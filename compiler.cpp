@@ -106,6 +106,63 @@ public:
 
     return builder->CreateCall(callee, ArgsV, "calltmp");
   }
+
+  Value *visit(IfExprAST &node) {
+    Value *condV = node.getCond()->accept(*this);
+    if (!condV) {
+      return nullptr;
+    }
+
+    // Convert condition to a bool by comparing non-equal to 0.0.
+    condV = builder->CreateFCmpONE(
+        condV, ConstantFP::get(*theContext, APFloat(0.0)), "ifcond");
+
+    Function *theFunction = builder->GetInsertBlock()->getParent();
+
+    // Create blocks for the then and else cases. Insert the 'then' block at the
+    // end of the function.
+    BasicBlock *thenBB = BasicBlock::Create(*theContext, "then", theFunction);
+    BasicBlock *elseBB = BasicBlock::Create(*theContext, "else");
+    BasicBlock *mergeBB = BasicBlock::Create(*theContext, "ifcont");
+
+    builder->CreateCondBr(condV, thenBB, elseBB);
+
+    // Emit then value.
+    builder->SetInsertPoint(thenBB);
+
+    Value *thenV = node.getThen()->accept(*this);
+    if (!thenV) {
+      return nullptr;
+    }
+
+    builder->CreateBr(mergeBB);
+    // Codegen of 'Then' can change the current block, update thenBB for the
+    // PHI.
+    thenBB = builder->GetInsertBlock();
+
+    // Emit else block.
+    theFunction->insert(theFunction->end(), elseBB);
+    builder->SetInsertPoint(elseBB);
+
+    Value *elseV = node.getElse()->accept(*this);
+    if (!elseV) {
+      return nullptr;
+    }
+    builder->CreateBr(mergeBB);
+    // Codegen of 'Then' can change the current block, update thenBB for the
+    // PHI.
+    elseBB = builder->GetInsertBlock();
+
+    // Emit merge block.
+    theFunction->insert(theFunction->end(), mergeBB);
+    builder->SetInsertPoint(mergeBB);
+    PHINode *pn =
+        builder->CreatePHI(Type::getDoubleTy(*theContext), 2, "iftmp");
+
+    pn->addIncoming(thenV, thenBB);
+    pn->addIncoming(elseV, elseBB);
+    return pn;
+  };
 };
 
 class CodegenFunctionVisitor : public FunctionVisitor {
