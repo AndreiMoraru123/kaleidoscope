@@ -146,8 +146,8 @@ public:
       }
     }
 
-    auto &proto = *node.getProto();
-    functionProtos[proto.getName()] = node.releaseProto();
+    const std::string protoName = node.getProto()->getName();
+    functionProtos[protoName] = node.releaseProto();
 
     if (!function) {
       return nullptr;
