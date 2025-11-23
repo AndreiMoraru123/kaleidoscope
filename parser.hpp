@@ -19,6 +19,7 @@ public:
   virtual llvm::Value *visit(class BinaryExprAST &node) = 0;
   virtual llvm::Value *visit(class CallExprAST &node) = 0;
   virtual llvm::Value *visit(class IfExprAST &node) = 0;
+  virtual llvm::Value *visit(class ForExprAST &node) = 0;
 };
 
 class FunctionVisitor {
@@ -129,6 +130,24 @@ public:
   llvm::Value *accept(ExprVisitor &v) override { return v.visit(*this); }
 };
 
+class ForExprAST : public ExprAST {
+  std::string VarName;
+  std::unique_ptr<ExprAST> Start, End, Step, Body;
+
+public:
+  const std::string &getVarName() const { return VarName; }
+  ExprAST *getStart() const { return Start.get(); }
+  ExprAST *getEnd() const { return End.get(); }
+  ExprAST *getStep() const { return Step.get(); }
+  ExprAST *getBody() const { return Body.get(); }
+  ForExprAST(const std::string &VarName, std::unique_ptr<ExprAST> Start,
+             std::unique_ptr<ExprAST> End, std::unique_ptr<ExprAST> Step,
+             std::unique_ptr<ExprAST> Body)
+      : VarName(VarName), Start(std::move(Start)), End(std::move(End)),
+        Step(std::move(Step)), Body(std::move(Body)) {}
+  llvm::Value *accept(ExprVisitor &v) override { return v.visit(*this); }
+};
+
 llvm::Value *LogErrorV(const char *Str) {
   std::println("Error: {}", Str);
   return nullptr;
@@ -183,6 +202,59 @@ static std::unique_ptr<ExprAST> ParseIfExpr() {
 
   return std::make_unique<IfExprAST>(std::move(Cond), std::move(Then),
                                      std::move(Else));
+}
+
+static std::unique_ptr<ExprAST> ParseForExpr() {
+  GetNextToken(); // eat the 'for'.
+
+  if (currentToken != static_cast<int>(Token::IDENTIFIER)) {
+    return LogError("expected identifier after for");
+  }
+
+  std::string IdName = identifier;
+  GetNextToken(); // eat identifier.
+
+  if (currentToken != '=') {
+    return LogError("expected '=' after for");
+  }
+  GetNextToken(); // eat '='.
+
+  auto Start = ParseExpression();
+  if (!Start) {
+    return nullptr;
+  }
+
+  if (currentToken != ',') {
+    return LogError("expected ',' after for start value");
+  }
+  GetNextToken();
+
+  auto End = ParseExpression();
+  if (!End) {
+    return nullptr;
+  }
+
+  std::unique_ptr<ExprAST> Step;
+  if (currentToken == ',') {
+    GetNextToken();
+    Step = ParseExpression();
+    if (!Step) {
+      return nullptr;
+    }
+  }
+
+  if (currentToken != std::to_underlying(Token::IN)) {
+    return LogError("expected 'in' after for");
+  }
+  GetNextToken(); // eat 'in'.
+
+  auto Body = ParseExpression();
+  if (!Body) {
+    return nullptr;
+  }
+
+  return std::make_unique<ForExprAST>(IdName, std::move(Start), std::move(End),
+                                      std::move(Step), std::move(Body));
 }
 
 // parenexpr ::= '(' expression ')'
@@ -248,6 +320,8 @@ static std::unique_ptr<ExprAST> ParsePrimary() {
     return ParseParenExpr();
   case std::to_underlying(Token::IF):
     return ParseIfExpr();
+  case std::to_underlying(Token::FOR):
+    return ParseForExpr();
   default:
     return LogError("unknown token when expecting an expression");
   }

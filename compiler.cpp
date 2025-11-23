@@ -75,6 +75,11 @@ public:
       return builder->CreateFMul(L, R, "multmp");
     case '/':
       return builder->CreateFDiv(L, R, "divtmp");
+    case '<': {
+      Value *Cmp = builder->CreateFCmpULT(L, R, "cmptmp");
+      // Convert bool 0/1 to double 0.0 or 1.0
+      return builder->CreateUIToFP(Cmp, Type::getDoubleTy(*theContext), "booltmp");
+    }
     default:
       LogErrorV("invalid binary operator");
       return nullptr;
@@ -162,6 +167,91 @@ public:
     pn->addIncoming(thenV, thenBB);
     pn->addIncoming(elseV, elseBB);
     return pn;
+  };
+
+  Value *visit(ForExprAST &node) {
+    // Emit the start code first, without 'variable' in scope.
+    Value *startV = node.getStart()->accept(*this);
+    if (!startV) {
+      return nullptr;
+    }
+
+    // Make the new basic block for the loop header, inserting after current
+    // block.
+    Function *theFunction = builder->GetInsertBlock()->getParent();
+    BasicBlock *preheaderBB = builder->GetInsertBlock();
+    BasicBlock *loopBB = BasicBlock::Create(*theContext, "loop", theFunction);
+
+    // Insert an explicit fall through from the current block to the loopBB.
+    builder->CreateBr(loopBB);
+
+    // Start insertion in loopBB.
+    builder->SetInsertPoint(loopBB);
+
+    // Start the PHI node with an entry for start.
+    PHINode *variable = builder->CreatePHI(Type::getDoubleTy(*theContext), 2,
+                                           node.getVarName());
+    variable->addIncoming(startV, preheaderBB);
+
+    // Within the loop, the variable is defined equal to the PHI node. If it
+    // shadows an existing variable, we have to restore it, so save it now.
+    Value *oldVal = namedValues[node.getVarName()];
+    namedValues[node.getVarName()] = variable;
+
+    // Emit the body of the loop. This, like any other expr, can change the
+    // current BB. Note that we ignore the value computed by the body, but
+    // don't allow an error.
+    if (!node.getBody()->accept(*this)) {
+      return nullptr;
+    }
+
+    // Emit the step value.
+    Value *stepV = nullptr;
+    if (node.getStep()) {
+      stepV = node.getStep()->accept(*this);
+      if (!stepV) {
+        return nullptr;
+      }
+    } else {
+      // If not specified, use 1.0.
+      stepV = ConstantFP::get(*theContext, APFloat(1.0));
+    }
+
+    Value *nextVar = builder->CreateFAdd(variable, stepV, "nextvar");
+
+    // Compute the end condition.
+    Value *endCond = node.getEnd()->accept(*this);
+    if (!endCond) {
+      return nullptr;
+    }
+
+    // Convert condition to a bool by comparing non-equal to 0.0.
+    endCond = builder->CreateFCmpONE(
+        endCond, ConstantFP::get(*theContext, APFloat(0.0)), "loopcond");
+
+    // Create the "after loop" block and insert it.
+    BasicBlock *loopEndBB = builder->GetInsertBlock();
+    BasicBlock *afterBB =
+        BasicBlock::Create(*theContext, "afterloop", theFunction);
+
+    // Insert the conditional branch into the end of loopEndBB.
+    builder->CreateCondBr(endCond, loopBB, afterBB);
+
+    // Any new code will be inserted in afterBB.
+    builder->SetInsertPoint(afterBB);
+
+    // Add the step to the variable.
+    variable->addIncoming(nextVar, loopEndBB);
+
+    // Restore the unshadowed variable.
+    if (oldVal) {
+      namedValues[node.getVarName()] = oldVal;
+    } else {
+      namedValues.erase(node.getVarName());
+    }
+
+    // for expr always returns 0.0.
+    return Constant::getNullValue(Type::getDoubleTy(*theContext));
   };
 };
 

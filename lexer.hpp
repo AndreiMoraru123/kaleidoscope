@@ -15,6 +15,8 @@ enum class Token : int {
   IF = -6,
   THEN = -7,
   ELSE = -8,
+  FOR = -9,
+  IN = -10,
 };
 
 const inline std::unordered_map<int, std::string> tokenNames = {
@@ -54,6 +56,12 @@ static int GetToken() {
     }
     if (identifier == "else") {
       return std::to_underlying(Token::ELSE);
+    }
+    if (identifier == "for") {
+      return std::to_underlying(Token::FOR);
+    }
+    if (identifier == "in") {
+      return std::to_underlying(Token::IN);
     }
     return std::to_underlying(Token::IDENTIFIER);
   }

@@ -9,6 +9,7 @@ find_package(LLVM REQUIRED CONFIG)
 include_directories(${LLVM_INCLUDE_DIRS})
 add_definitions(${LLVM_DEFINITIONS})
 
-add_executable(kaleidoscope compiler.cpp)
+add_executable(kaleidoscope compiler.cpp external.cpp)
 
+target_link_options(kaleidoscope PRIVATE -rdynamic)
 target_link_libraries(kaleidoscope LLVM-21)
