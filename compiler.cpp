@@ -213,8 +213,8 @@ public:
         return nullptr;
       }
     } else {
-      // If not specified, use 1.0.
-      stepV = ConstantFP::get(*theContext, APFloat(1.0));
+      // If not specified, it's an error.
+      LogErrorV("for loop step value required");
     }
 
     Value *nextVar = builder->CreateFAdd(variable, stepV, "nextvar");

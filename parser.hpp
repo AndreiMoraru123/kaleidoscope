@@ -227,26 +227,48 @@ static std::unique_ptr<ExprAST> ParseForExpr() {
   if (currentToken != ',') {
     return LogError("expected ',' after for start value");
   }
-  GetNextToken();
+  GetNextToken(); // eat ','.
 
   auto End = ParseExpression();
   if (!End) {
     return nullptr;
   }
 
+  if (currentToken != ',') {
+    return LogError("expected ',' after for end value");
+  }
+  GetNextToken(); // eat ','.
+
+  if (currentToken != static_cast<int>(Token::IDENTIFIER)) {
+    return LogError("expected identifier after for end");
+  }
+  GetNextToken(); // eat identifier.
+
+  if (currentToken != '=') {
+    return LogError("expected '=' after identifier increment expression");
+  }
+  GetNextToken(); // eat '='.
+
+  if (currentToken != static_cast<int>(Token::IDENTIFIER)) {
+    return LogError("expected identifier after for end");
+  }
+  GetNextToken(); // eat identifier.
+
+  if (currentToken != '+') {
+    return LogError("expected '+' for increment expression");
+  }
+  GetNextToken(); // eat '+'.
+
   std::unique_ptr<ExprAST> Step;
-  if (currentToken == ',') {
-    GetNextToken();
-    Step = ParseExpression();
-    if (!Step) {
-      return nullptr;
-    }
+  Step = ParseExpression();
+  if (!Step) {
+    return nullptr;
   }
 
-  if (currentToken != std::to_underlying(Token::IN)) {
-    return LogError("expected 'in' after for");
+  if (currentToken != std::to_underlying(Token::DO)) {
+    return LogError("expected 'do' after for");
   }
-  GetNextToken(); // eat 'in'.
+  GetNextToken(); // eat 'do'.
 
   auto Body = ParseExpression();
   if (!Body) {
