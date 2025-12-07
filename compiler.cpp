@@ -58,6 +58,21 @@ public:
     }
     return V;
   }
+  
+  Value *visit(UnaryExprAST &node) {
+    Value *operandV = node.getOperand()->accept(*this);
+    if (!operandV) {
+      return nullptr;
+    }
+
+    Function *F = getFunction(std::string("unary") + node.getOp());
+    if (!F) {
+      LogErrorV("Unknown unary operator");
+      return nullptr;
+    }
+
+    return builder->CreateCall(F, operandV, "unop");
+  }
 
   Value *visit(BinaryExprAST &node) {
     Value *L = node.getLHS()->accept(*this);

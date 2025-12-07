@@ -16,6 +16,7 @@ public:
   virtual ~ExprVisitor() = default;
   virtual llvm::Value *visit(class NumberExprAST &node) = 0;
   virtual llvm::Value *visit(class VariableExprAST &node) = 0;
+  virtual llvm::Value *visit(class UnaryExprAST &node) = 0;
   virtual llvm::Value *visit(class BinaryExprAST &node) = 0;
   virtual llvm::Value *visit(class CallExprAST &node) = 0;
   virtual llvm::Value *visit(class IfExprAST &node) = 0;
@@ -50,6 +51,18 @@ class VariableExprAST : public ExprAST {
 public:
   const std::string &getName() const { return Name; }
   VariableExprAST(const std::string &Name) : Name(Name) {}
+  llvm::Value *accept(ExprVisitor &v) override { return v.visit(*this); }
+};
+
+class UnaryExprAST : public ExprAST {
+  char Op;
+  std::unique_ptr<ExprAST> Operand;
+
+public:
+  char getOp() const { return Op; }
+  ExprAST *getOperand() const { return Operand.get(); }
+  UnaryExprAST(char Op, std::unique_ptr<ExprAST> Operand)
+      : Op(Op), Operand(std::move(Operand)) {}
   llvm::Value *accept(ExprVisitor &v) override { return v.visit(*this); }
 };
 
@@ -373,6 +386,22 @@ static int GetTokenPrecedence() {
   return TokPrec;
 }
 
+static std::unique_ptr<ExprAST> ParseUnary() {
+  // If the current token is not an operator, it must be a primary expr.
+  if (!isascii(currentToken) || currentToken == '(' || currentToken == ',') {
+    return ParsePrimary();
+  }
+
+  // Otherwise, this is a unary operator.
+  char Op = static_cast<char>(currentToken);
+  GetNextToken(); // eat unary operator.
+
+  if (auto Operand = ParseUnary()) {
+    return std::make_unique<UnaryExprAST>(Op, std::move(Operand));
+  }
+  return nullptr;
+}
+
 static std::unique_ptr<ExprAST> ParseBinOpRHS(int ExprPrec,
                                               std::unique_ptr<ExprAST> LHS) {
   // std::println("Parsing binary operation RHS with precedence {}", ExprPrec);
@@ -385,7 +414,7 @@ static std::unique_ptr<ExprAST> ParseBinOpRHS(int ExprPrec,
     int BinOp = currentToken;
     GetNextToken(); // eat binop
 
-    auto RHS = ParsePrimary();
+    auto RHS = ParseUnary();
     if (!RHS) {
       return nullptr;
     }
@@ -404,7 +433,7 @@ static std::unique_ptr<ExprAST> ParseBinOpRHS(int ExprPrec,
 }
 
 static std::unique_ptr<ExprAST> ParseExpression() {
-  auto LHS = ParsePrimary();
+  auto LHS = ParseUnary();
   if (!LHS) {
     return nullptr;
   }
@@ -423,6 +452,16 @@ static std::unique_ptr<PrototypeAST> ParsePrototype() {
     fnName = identifier;
     Kind = 0;
     GetNextToken(); // eat identifier.
+    break;
+  case std::to_underlying(Token::UNARY):
+    GetNextToken();
+    if (!isascii(currentToken)) {
+      return LogErrorP("Expected unary operator");
+    }
+    fnName = "unary";;
+    fnName += static_cast<char>(currentToken);
+    Kind = 1;
+    GetNextToken(); // eat operator.
     break;
   case std::to_underlying(Token::BINARY):
     GetNextToken();
