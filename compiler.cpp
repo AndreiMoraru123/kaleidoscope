@@ -76,14 +76,20 @@ public:
     case '/':
       return builder->CreateFDiv(L, R, "divtmp");
     case '<': {
-      Value *Cmp = builder->CreateFCmpULT(L, R, "cmptmp");
+      L = builder->CreateFCmpULT(L, R, "cmptmp");
       // Convert bool 0/1 to double 0.0 or 1.0
-      return builder->CreateUIToFP(Cmp, Type::getDoubleTy(*theContext), "booltmp");
+      return builder->CreateUIToFP(L, Type::getDoubleTy(*theContext),
+                                   "booltmp");
     }
     default:
-      LogErrorV("invalid binary operator");
-      return nullptr;
+      break;
     }
+    
+    Function *F = getFunction(std::string("binary") + node.getOp()); 
+    assert(F && "Binary operator function not found");
+    
+    Value *ops[] = {L, R};
+    return builder->CreateCall(F, ops, "binop");
   }
 
   Value *visit(CallExprAST &node) {
@@ -275,7 +281,6 @@ public:
   }
 
   Function *visit(FunctionAST &node) {
-    // Function *function = theModule->getFunction(node.getProto()->getName());
     Function *function = getFunction(node.getProto()->getName());
     if (!function) {
       function = node.getProto()->accept(*this);
@@ -294,6 +299,12 @@ public:
     }
 
     const std::string protoName = node.getProto()->getName();
+    
+    if (node.getProto()->isBinaryOp()) {
+      const auto precedence = node.getProto()->getPrecedence();
+      BinopPrecedence[node.getProto()->getOperatorName()] = precedence;
+    }
+
     functionProtos[protoName] = node.releaseProto();
 
     if (!function) {

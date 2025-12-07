@@ -83,12 +83,23 @@ public:
 class PrototypeAST {
   std::string Name;
   std::vector<std::string> Args;
+  bool IsOperator = false;
+  unsigned Precedence = 0;
 
 public:
   const std::string &getName() const { return Name; }
   const std::vector<std::string> &getArgs() const { return Args; }
-  PrototypeAST(const std::string &Name, const std::vector<std::string> &Args)
-      : Name(Name), Args(Args) {}
+  bool isBinaryOp() const { return IsOperator && Args.size() == 2; }
+  bool isUnaryOp() const { return IsOperator && Args.size() == 1; }
+  char getOperatorName() const {
+    assert(isBinaryOp() || isUnaryOp());
+    return Name[Name.size() - 1];
+  }
+  unsigned getPrecedence() const { return Precedence; }
+  PrototypeAST(const std::string &Name, const std::vector<std::string> &Args,
+               bool IsOperator = false, unsigned Precedence = 0)
+      : Name(Name), Args(Args), IsOperator(IsOperator), Precedence(Precedence) {
+  }
   llvm::Function *accept(FunctionVisitor &v) { return v.visit(*this); };
 };
 
@@ -403,28 +414,57 @@ static std::unique_ptr<ExprAST> ParseExpression() {
 // prototype
 // ::= id '(' id* ')'
 static std::unique_ptr<PrototypeAST> ParsePrototype() {
-  if (currentToken != static_cast<int>(Token::IDENTIFIER)) {
-    return LogErrorP("Expected function name in prototype");
-  }
+  std::string fnName;
+  unsigned Kind = 0;
+  unsigned Precedence = 30;
 
-  std::string fnName = identifier;
-  GetNextToken();
+  switch (currentToken) {
+  case std::to_underlying(Token::IDENTIFIER):
+    fnName = identifier;
+    Kind = 0;
+    GetNextToken(); // eat identifier.
+    break;
+  case std::to_underlying(Token::BINARY):
+    GetNextToken();
+    if (!isascii(currentToken)) {
+      return LogErrorP("Expected binary operator");
+    }
+    fnName = "binary";
+    fnName += static_cast<char>(currentToken);
+    Kind = 2;
+    GetNextToken(); // eat operator.
+
+    if (currentToken == std::to_underlying(Token::NUMBER)) {
+      if (numVal < 1 || numVal > 100) {
+        return LogErrorP(
+            "Invalid precedence for binary operator: must be 1..100");
+      }
+      Precedence = static_cast<unsigned>(numVal);
+      GetNextToken();
+    }
+    break;
+  }
 
   if (currentToken != '(') {
     return LogErrorP("Expected '(' in prototype");
   }
-
-  std::vector<std::string> argNames;
-  while (GetNextToken() == static_cast<int>(Token::IDENTIFIER)) {
-    argNames.push_back(identifier);
+  std::vector<std::string> ArgNames;
+  while (GetNextToken() == std::to_underlying(Token::IDENTIFIER)) {
+    ArgNames.push_back(identifier);
   }
   if (currentToken != ')') {
     return LogErrorP("Expected ')' in prototype");
   }
 
+  // success
   GetNextToken(); // eat ')'
 
-  return std::make_unique<PrototypeAST>(fnName, std::move(argNames));
+  if (Kind && ArgNames.size() != Kind) {
+    return LogErrorP("Invalid number of operands for operator");
+  }
+
+  return std::make_unique<PrototypeAST>(fnName, std::move(ArgNames), Kind != 0,
+                                        Precedence);
 }
 
 // definition ::= 'def' prototype expression
