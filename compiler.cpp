@@ -20,13 +20,16 @@
 #include <llvm/Passes/StandardInstrumentations.h>
 #include <llvm/Support/Error.h>
 #include <llvm/Support/TargetSelect.h>
+#include <llvm/Support/raw_ostream.h>
 #include <llvm/Target/TargetMachine.h>
 #include <llvm/Transforms/InstCombine/InstCombine.h>
+#include <llvm/IR/LegacyPassManager.h>
 #include <llvm/Transforms/Scalar.h>
 #include <llvm/Transforms/Scalar/GVN.h>
 #include <llvm/Transforms/Scalar/Reassociate.h>
 #include <llvm/Transforms/Scalar/SimplifyCFG.h>
 #include <llvm/Transforms/Utils/Mem2Reg.h>
+#include <llvm/MC/TargetRegistry.h>
 
 
 using namespace llvm;
@@ -603,6 +606,55 @@ int main() {
 
   // Run the main "interpreter loop" now.
   MainLoop();
+  
+  // Initialize the target registry etc.
+  InitializeAllTargetInfos();
+  InitializeAllTargets();
+  InitializeAllTargetMCs();
+  InitializeAllAsmParsers();
+  InitializeAllAsmPrinters();
+
+  auto TargetTriple = LLVMGetDefaultTargetTriple();
+  theModule->setTargetTriple(Triple(TargetTriple));
+  
+  std::string Error;
+  auto Target = TargetRegistry::lookupTarget(TargetTriple, Error);
+
+  // Print an error and exit if we couldn't find the requested target.
+  if (!Target) {
+    errs() << Error;
+    return 1;
+  }
+  
+  auto CPU = "generic";
+  auto Features = "";
+  
+  TargetOptions opt;
+  auto TheTargetMachine =
+      Target->createTargetMachine(TargetTriple, CPU, Features, opt, Reloc::PIC_);
+  
+  theModule->setDataLayout(TheTargetMachine->createDataLayout());
+  auto Filename = "output.o";;
+  std::error_code EC;
+  raw_fd_ostream dest(Filename, EC, sys::fs::OF_None);
+
+  if (EC) {
+    errs() << "Could not open file: " << EC.message();
+    return 1;
+  }
+
+  legacy::PassManager pass;
+  auto FileType = CodeGenFileType::ObjectFile;
+  
+  if (TheTargetMachine->addPassesToEmitFile(pass, dest, nullptr, FileType)) {
+    errs() << "TheTargetMachine can't emit a file of this type";
+    return 1;
+  }
+
+  pass.run(*theModule);
+  dest.flush();
+
+  outs() << "Wrote " << Filename << "\n";
 
   return 0;
 }
