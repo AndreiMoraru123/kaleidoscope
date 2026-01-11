@@ -19,6 +19,8 @@ enum class Token : int {
   DO = -10,
   BINARY = -11,
   UNARY = -12,
+  VAR = -13,
+  IN = -13
 };
 
 // const inline std::unordered_map<int, std::string> tokenNames = {
@@ -70,6 +72,12 @@ static int GetToken() {
     }
     if (identifier == "unary") {
       return std::to_underlying(Token::UNARY);
+    }
+    if (identifier == "var") {
+      return std::to_underlying(Token::VAR);
+    }
+    if (identifier == "in") {
+      return std::to_underlying(Token::IN);
     }
     return std::to_underlying(Token::IDENTIFIER);
   }

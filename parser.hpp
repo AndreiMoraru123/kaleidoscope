@@ -21,6 +21,7 @@ public:
   virtual llvm::Value *visit(class CallExprAST &node) = 0;
   virtual llvm::Value *visit(class IfExprAST &node) = 0;
   virtual llvm::Value *visit(class ForExprAST &node) = 0;
+  virtual llvm::Value *visit(class VarExprAST &node) = 0;
 };
 
 class FunctionVisitor {
@@ -170,6 +171,21 @@ public:
       : VarName(VarName), Start(std::move(Start)), End(std::move(End)),
         Step(std::move(Step)), Body(std::move(Body)) {}
   llvm::Value *accept(ExprVisitor &v) override { return v.visit(*this); }
+};
+
+class VarExprAST: public ExprAST {
+  std::vector<std::pair<std::string, std::unique_ptr<ExprAST>>> VarNames;
+  std::unique_ptr<ExprAST> Body;
+  
+  public:
+  const auto &getVarNames() const { return VarNames; }
+  ExprAST *getBody() const { return Body.get(); }
+  VarExprAST(std::vector<std::pair<std::string, std::unique_ptr<ExprAST>>> VarNames,
+             std::unique_ptr<ExprAST> Body)
+      : VarNames(std::move(VarNames)), Body(std::move(Body)) {}
+  llvm::Value *accept(ExprVisitor &v) override {
+    return v.visit(*this);
+  }
 };
 
 llvm::Value *LogErrorV(const char *Str) {
@@ -352,6 +368,58 @@ static std::unique_ptr<ExprAST> ParseIdentifierExpr() {
   return std::make_unique<CallExprAST>(IdName, Args);
 }
 
+static std::unique_ptr<ExprAST> ParseVarExpr() {
+  GetNextToken(); // eat the 'var'.
+
+  std::vector<std::pair<std::string, std::unique_ptr<ExprAST>>> VarNames;
+
+  // At least one variable name is required.
+  if (currentToken != static_cast<int>(Token::IDENTIFIER)) {
+    return LogError("expected identifier after var");
+  }
+
+  while (true) {
+    std::string Name = identifier;
+    GetNextToken(); // eat identifier.
+
+    // Read the optional initializer.
+    std::unique_ptr<ExprAST> Init = nullptr;
+    if (currentToken == '=') {
+      GetNextToken(); // eat the '='.
+
+      Init = ParseExpression();
+      if (!Init) {
+        return nullptr;
+      }
+    }
+
+    VarNames.push_back(std::make_pair(Name, std::move(Init)));
+
+    // end of var list, exit loop
+    if (currentToken != ',') {
+      break;
+    }
+    GetNextToken(); // eat the ','.
+
+    if (currentToken != static_cast<int>(Token::IDENTIFIER)) {
+      return LogError("expected identifier after var");
+    }
+  }
+
+  // at this point, we have to have 'in'
+  if (currentToken != std::to_underlying(Token::IN)) {
+    return LogError("expected 'in' keyword after 'var'");
+  }
+  GetNextToken(); // eat 'in'.
+
+  auto Body = ParseExpression();
+  if (!Body) {
+    return nullptr;
+  }
+
+  return std::make_unique<VarExprAST>(std::move(VarNames), std::move(Body));
+}
+
 // primary
 //   ::= identifierexpr
 //   ::= numberexpr
@@ -368,6 +436,8 @@ static std::unique_ptr<ExprAST> ParsePrimary() {
     return ParseIfExpr();
   case std::to_underlying(Token::FOR):
     return ParseForExpr();
+  case std::to_underlying(Token::VAR):
+    return ParseVarExpr();
   default:
     return LogError("unknown token when expecting an expression");
   }

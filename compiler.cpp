@@ -10,6 +10,7 @@
 #include <llvm/IR/DerivedTypes.h>
 #include <llvm/IR/Function.h>
 #include <llvm/IR/IRBuilder.h>
+#include <llvm/IR/Instructions.h>
 #include <llvm/IR/LLVMContext.h>
 #include <llvm/IR/Module.h>
 #include <llvm/IR/PassManager.h>
@@ -25,13 +26,15 @@
 #include <llvm/Transforms/Scalar/GVN.h>
 #include <llvm/Transforms/Scalar/Reassociate.h>
 #include <llvm/Transforms/Scalar/SimplifyCFG.h>
+#include <llvm/Transforms/Utils/Mem2Reg.h>
+
 
 using namespace llvm;
 
 static std::unique_ptr<LLVMContext> theContext;
 static std::unique_ptr<Module> theModule;
 static std::unique_ptr<IRBuilder<>> builder;
-static std::map<std::string, Value *> namedValues;
+static std::map<std::string, AllocaInst *> namedValues;
 static std::unique_ptr<KaleidoscopeJIT> theJIT;
 static std::unique_ptr<FunctionPassManager> theFPM;
 static std::unique_ptr<LoopAnalysisManager> theLAM;
@@ -42,6 +45,14 @@ static std::unique_ptr<PassInstrumentationCallbacks> thePIC;
 static std::unique_ptr<StandardInstrumentations> theSI;
 static std::map<std::string, std::unique_ptr<PrototypeAST>> functionProtos;
 
+
+static AllocaInst *CreateEntryBlockAlloca(Function *TheFunction,
+                                         const std::string &VarName) {
+  IRBuilder<> TmpB(&TheFunction->getEntryBlock(),
+                   TheFunction->getEntryBlock().begin());
+  return TmpB.CreateAlloca(Type::getDoubleTy(*theContext), nullptr, VarName.c_str());
+}
+
 Function *getFunction(std::string Name);
 
 class CodegenExprVisitor : public ExprVisitor {
@@ -51,12 +62,12 @@ public:
   }
 
   Value *visit(VariableExprAST &node) {
-    Value *V = namedValues[node.getName()];
-    if (!V) {
+    AllocaInst *A = namedValues[node.getName()];
+    if (!A) {
       LogErrorV("Unknown variable name");
       return nullptr;
     }
-    return V;
+    return builder->CreateLoad(A->getAllocatedType(), A, node.getName().c_str());
   }
   
   Value *visit(UnaryExprAST &node) {
@@ -82,6 +93,30 @@ public:
     }
 
     switch (node.getOp()) {
+      case '=': {
+        // Assignment requires the LHS to be an identifier.
+        VariableExprAST *LHSE = static_cast<VariableExprAST *>(node.getLHS());
+        if (!LHSE) {
+          LogErrorV("destination of '=' must be a variable");
+          return nullptr;
+        }
+
+        // Codegen the RHS.
+        Value *Val = R;
+        if (!Val) {
+          return nullptr;
+        }
+
+        // Look up the name.
+        Value *Variable = namedValues[LHSE->getName()];
+        if (!Variable) {
+          LogErrorV("Unknown variable name");
+          return nullptr;
+        }
+
+        builder->CreateStore(Val, Variable);
+        return Val;
+      }
     case '+':
       return builder->CreateFAdd(L, R, "addtmp");
     case '-':
@@ -191,15 +226,21 @@ public:
   };
 
   Value *visit(ForExprAST &node) {
+    // Make the new basic block for the loop header, inserting after current block.
+    Function *theFunction = builder->GetInsertBlock()->getParent();
+    
+    // Create an alloca for the variable in the entry block.
+    AllocaInst *alloca = CreateEntryBlockAlloca(theFunction, node.getVarName());
+
     // Emit the start code first, without 'variable' in scope.
     Value *startV = node.getStart()->accept(*this);
     if (!startV) {
       return nullptr;
     }
 
-    // Make the new basic block for the loop header, inserting after current
-    // block.
-    Function *theFunction = builder->GetInsertBlock()->getParent();
+    // Store the start value into the alloca.
+    builder->CreateStore(startV, alloca);
+    
     BasicBlock *preheaderBB = builder->GetInsertBlock();
     BasicBlock *loopBB = BasicBlock::Create(*theContext, "loop", theFunction);
 
@@ -209,15 +250,10 @@ public:
     // Start insertion in loopBB.
     builder->SetInsertPoint(loopBB);
 
-    // Start the PHI node with an entry for start.
-    PHINode *variable = builder->CreatePHI(Type::getDoubleTy(*theContext), 2,
-                                           node.getVarName());
-    variable->addIncoming(startV, preheaderBB);
-
     // Within the loop, the variable is defined equal to the PHI node. If it
     // shadows an existing variable, we have to restore it, so save it now.
-    Value *oldVal = namedValues[node.getVarName()];
-    namedValues[node.getVarName()] = variable;
+    AllocaInst *oldVal = namedValues[node.getVarName()];
+    namedValues[node.getVarName()] = alloca;
 
     // Emit the body of the loop. This, like any other expr, can change the
     // current BB. Note that we ignore the value computed by the body, but
@@ -238,13 +274,17 @@ public:
       LogErrorV("for loop step value required");
     }
 
-    Value *nextVar = builder->CreateFAdd(variable, stepV, "nextvar");
-
     // Compute the end condition.
     Value *endCond = node.getEnd()->accept(*this);
     if (!endCond) {
       return nullptr;
     }
+
+    // Reload, increment, and restore the alloca. This handles the case where
+    // the body of the loop mutates the variable.
+    Value* currVar = builder->CreateLoad(alloca->getAllocatedType(), alloca, node.getVarName().c_str());
+    Value *nextVar = builder->CreateFAdd(currVar, stepV, "nextvar");
+    builder->CreateStore(nextVar, alloca);
 
     // Convert condition to a bool by comparing non-equal to 0.0.
     endCond = builder->CreateFCmpONE(
@@ -261,9 +301,6 @@ public:
     // Any new code will be inserted in afterBB.
     builder->SetInsertPoint(afterBB);
 
-    // Add the step to the variable.
-    variable->addIncoming(nextVar, loopEndBB);
-
     // Restore the unshadowed variable.
     if (oldVal) {
       namedValues[node.getVarName()] = oldVal;
@@ -273,6 +310,59 @@ public:
 
     // for expr always returns 0.0.
     return Constant::getNullValue(Type::getDoubleTy(*theContext));
+  };
+  
+  Value *visit(VarExprAST &node) {
+    std::vector<AllocaInst *> oldBindings;
+
+    Function *theFunction = builder->GetInsertBlock()->getParent();
+
+    // Register all variables and emit their initializer.
+    for (unsigned i = 0, e = node.getVarNames().size(); i != e; ++i) {
+      const auto &varPair = node.getVarNames()[i];
+      const std::string &varName = varPair.first;
+      ExprAST *init = varPair.second.get();
+
+      // Emit the initializer before creating the alloca. This prevents the
+      // initializer from referencing the variable itself, and permits stuff
+      // like this:
+      //  var a = 1 in
+      //    var a = a in ...   # refers to outer 'a'.
+      Value *initVal;
+      if (init) {
+        initVal = init->accept(*this);
+        if (!initVal) {
+          return nullptr;
+        }
+      } else {
+        // If not specified, use 0.0.
+        initVal = ConstantFP::get(*theContext, APFloat(0.0));
+      }
+
+      AllocaInst *alloca = CreateEntryBlockAlloca(theFunction, varName);
+      builder->CreateStore(initVal, alloca);
+
+      // Remember the old variable binding so that we can restore it later.
+      oldBindings.push_back(namedValues[varName]);
+
+      // Remember this binding.
+      namedValues[varName] = alloca;
+    }
+
+    // Codegen the body of the let expression.
+    Value *bodyV = node.getBody()->accept(*this);
+    if (!bodyV) {
+      return nullptr;
+    }
+
+    // Restore all old bindings.
+    for (unsigned i = 0, e = node.getVarNames().size(); i != e; ++i) {
+      const std::string &varName = node.getVarNames()[i].first;
+      namedValues[varName] = oldBindings[i];
+    }
+
+    // Return the body computation.
+    return bodyV;
   };
 };
 
@@ -336,7 +426,9 @@ public:
 
     namedValues.clear();
     for (auto &arg : function->args()) {
-      namedValues[std::string(arg.getName())] = &arg;
+      AllocaInst *alloca = CreateEntryBlockAlloca(function, std::string(arg.getName()));
+      builder->CreateStore(&arg, alloca);
+      namedValues[std::string(arg.getName())] = alloca;
     }
 
     if (Value *retVal = node.getBody()->accept(exprVisitor)) {
@@ -377,6 +469,12 @@ static void InitializeModuleAndManagers() {
   theFPM->addPass(GVNPass());
   // Simplify the control flow graph (deleting unreachable blocks, etc).
   theFPM->addPass(SimplifyCFGPass());
+  // Promote allocas to registers.
+  theFPM->addPass(PromotePass());
+  // Do simple "peephole" optimizations and bit-twiddling optzns.
+  theFPM->addPass(InstCombinePass());
+  // Reassociate expressions.
+  theFPM->addPass(ReassociatePass());
 
   PassBuilder PB;
   PB.registerModuleAnalyses(*theMAM);
@@ -488,6 +586,7 @@ int main() {
   InitializeNativeTargetAsmPrinter();
   InitializeNativeTargetAsmParser();
 
+  BinopPrecedence['='] = 2;
   BinopPrecedence['<'] = 10;
   BinopPrecedence['+'] = 20;
   BinopPrecedence['-'] = 20;
